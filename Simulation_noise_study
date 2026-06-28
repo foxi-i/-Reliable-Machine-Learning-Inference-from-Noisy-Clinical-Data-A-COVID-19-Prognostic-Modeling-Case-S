@@ -1,4 +1,71 @@
 
+"""
+Noise Simulation Study for IFOSS
+
+This script evaluates the robustness of the proposed IFOSS
+(Isolation Forest + One-Sided Selection) preprocessing framework
+under different data quality scenarios.
+
+The performance of IFOSS is compared with a baseline CatBoost model
+without preprocessing.
+
+Simulation Scenarios
+--------------------
+1. Clean dataset
+2. Label noise (20%)
+3. Feature noise (20%)
+4. Class imbalance (90:10)
+5. Combined corruption
+   - 20% label noise
+   - 20% feature noise
+   - 90:10 class imbalance
+
+Experimental Design
+-------------------
+For each simulation scenario:
+
+1. Artificial corruption is applied to the complete dataset.
+2. The corrupted dataset is split into
+   training, validation, and testing subsets.
+3. A baseline CatBoost model is trained.
+4. IFOSS preprocessing is applied to the training data.
+5. A second CatBoost model is trained using the
+   IFOSS-preprocessed training set.
+6. The optimal classification threshold is selected
+   using Youden's J statistic on the validation set.
+7. Both models are evaluated on the independent test set.
+8. The experiment is repeated across multiple random seeds.
+
+Classification Model
+--------------------
+CatBoostClassifier
+
+Evaluation Metrics
+------------------
+- Area Under the ROC Curve (AUC)
+- Weighted F1-score
+- Balanced Accuracy
+- G-Mean
+
+Required Variables
+------------------
+X : pandas DataFrame
+    Feature matrix.
+
+y : pandas Series or NumPy array
+    Binary class labels.
+
+
+Output
+------
+A summary table reporting the average improvement of IFOSS
+over the baseline model for each simulation scenario.
+
+The reported values represent:
+
+    Δ Metric = IFOSS − Baseline
+
+
 
 import numpy as np
 import pandas as pd
