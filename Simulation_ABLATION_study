@@ -1,3 +1,57 @@
+```python
+"""
+IFOSS Ablation Study
+
+This script evaluates the contribution of each component of the
+IFOSS preprocessing framework using repeated train/validation/test
+splits with multiple random seeds.
+
+Five preprocessing strategies are compared:
+
+1. Baseline
+   - No preprocessing.
+
+2. +IF
+   - Isolation Forest only.
+
+3. +OSS
+   - One-Sided Selection only.
+
+4. IF → OSS
+   - Isolation Forest followed by One-Sided Selection
+     (the proposed IFOSS framework).
+
+5. OSS → IF
+   - Reverse order of the proposed framework.
+
+Classification Model
+--------------------
+CatBoostClassifier
+
+Evaluation Metrics
+------------------
+- Area Under the ROC Curve (AUC)
+- Weighted F1-score
+- Balanced Accuracy
+- G-Mean
+
+Results are averaged across multiple random seeds and
+reported as mean ± standard deviation.
+
+Required Variables
+------------------
+X : pandas DataFrame
+    Feature matrix.
+
+y : pandas Series or NumPy array
+    Binary class labels.
+
+Output
+------
+A summary table comparing all preprocessing strategies.
+"""
+```
+
 
 import numpy as np
 import pandas as pd
