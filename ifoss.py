@@ -1,304 +1,385 @@
 """
-IFOSS Benchmark Script (Baseline vs Optuna-Tuned IFOSS)
+IFOSS: Isolation Forest + One-Sided Selection
 
-This script benchmarks multiple classifiers with and without IFOSS
-(Isolation Forest + One-Sided Selection).
+Standalone implementation of the IFOSS preprocessing framework.
 
-Outputs:
-  1) Baseline results (No IFOSS)
-  2) Results with Optuna-tuned IFOSS
-  3) Absolute percentage-point improvement (With − Without)
+Input:
+    X : pandas DataFrame
+    y : pandas Series or NumPy array
 
-
-Required variables in session:
-    Xl, yl      -> training features/labels
-    Xl_t, yl_t  -> external test/holdout features/labels
+Output:
+    X_resampled
+    y_resampled
+    best_params
 """
 
 import warnings
-warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore")
 
 import numpy as np
 import pandas as pd
 import optuna
-from typing import Tuple
 
 from sklearn.model_selection import train_test_split
-
-from sklearn.linear_model import LogisticRegression
-from sklearn.ensemble import RandomForestClassifier, IsolationForest
-from sklearn.svm import SVC
-from sklearn.pipeline import Pipeline
-from sklearn.compose import ColumnTransformer
-from sklearn.preprocessing import StandardScaler, OrdinalEncoder
+from sklearn.ensemble import IsolationForest
+from sklearn.metrics import roc_curve
 
 from imblearn import FunctionSampler
 from imblearn.under_sampling import OneSidedSelection
 
-from sklearn.metrics import (
-    roc_auc_score, f1_score, fbeta_score,
-    accuracy_score, balanced_accuracy_score,
-    roc_curve
-)
+from catboost import CatBoostClassifier
 
-import xgboost as xgb
-import lightgbm as lgb
-import catboost as cb
+# ============================================================
+# INPUT DATA
+# ============================================================
 
-optuna.logging.set_verbosity(optuna.logging.WARNING)
+# Replace with your dataset
+
+X = pd.read_csv("X.csv")
+y = pd.read_csv("y.csv").iloc[:,0]
+# ============================================================
 
 SEED = 42
 N_TRIALS = 200
 
+optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-def _to_numpy(y):
+
+def to_numpy(y):
+
     if hasattr(y, "values"):
         y = y.values
+
     return np.asarray(y).reshape(-1)
 
 
-yl_np = _to_numpy(yl)
-yl_t_np = _to_numpy(yl_t)
+y = to_numpy(y)
 
-
-X_inner_train, X_inner_valid, y_inner_train, y_inner_valid = train_test_split(
-    Xl, yl_np,
-    test_size=0.20,
-    stratify=yl_np,
-    random_state=SEED
-)
-
-
-cat_idx = [
-    Xl.columns.get_loc(c)
-    for c in Xl.columns
-    if Xl[c].dtype == "object" or Xl[c].dtype.name == "category"
-]
+# ------------------------------------------------------------
+# Detect categorical columns automatically
+# ------------------------------------------------------------
 
 cat_cols = [
-    c for c in Xl.columns
-    if Xl[c].dtype == "object" or Xl[c].dtype.name == "category"
+
+    c for c in X.columns
+
+    if X[c].dtype == "object"
+
+    or str(X[c].dtype) == "category"
+
 ]
 
-num_cols = [c for c in Xl.columns if c not in cat_cols]
+cat_idx = [
 
+    X.columns.get_loc(c)
 
-svm_preprocessor = ColumnTransformer(
-    transformers=[
-        ("num", StandardScaler(), num_cols),
-        ("cat", OrdinalEncoder(handle_unknown="use_encoded_value", unknown_value=-1), cat_cols),
-    ],
-    remainder="drop"
+    for c in cat_cols
+
+]
+
+# ------------------------------------------------------------
+# Train / Validation Split
+# ------------------------------------------------------------
+
+X_train, X_valid, y_train, y_valid = train_test_split(
+
+    X,
+    y,
+
+    test_size=0.20,
+
+    stratify=y,
+
+    random_state=SEED
+
 )
 
-TASK_TYPE = "CPU"
-THREADS = -1
 
-baseline_models = {
-    "Logistic Regression": LogisticRegression(
-        solver="liblinear", random_state=SEED, max_iter=2000
-    ),
-    "SVM (RBF)": Pipeline(steps=[
-        ("prep", svm_preprocessor),
-        ("clf", SVC(
-            kernel="rbf",
-            probability=True,
-            C=1.0,
-            gamma="scale",
-            class_weight="balanced",
-            random_state=SEED
-        ))
-    ]),
-    "Random Forest": RandomForestClassifier(
-        n_estimators=1000, random_state=SEED, n_jobs=-1
-    ),
-    "XGBoost": xgb.XGBClassifier(
-        n_estimators=1000,
-        eval_metric="logloss",
-        random_state=SEED,
-        n_jobs=-1,
-        use_label_encoder=False,
-        enable_categorical=True
-    ),
-    "LightGBM": lgb.LGBMClassifier(
-        n_estimators=1000, random_state=SEED, verbose=-1, n_jobs=-1
-    ),
-    "CatBoost": cb.CatBoostClassifier(
-        iterations=1000,
-        loss_function="Logloss",
-        random_seed=SEED,
-        verbose=0,
-        task_type=TASK_TYPE,
-        thread_count=THREADS,
-        early_stopping_rounds=200
-    )
-}
+# ------------------------------------------------------------
+# CatBoost model
+# ------------------------------------------------------------
+
+catboost = CatBoostClassifier(
+
+    iterations=1000,
+
+    loss_function="Logloss",
+
+    random_seed=SEED,
+
+    verbose=0,
+
+    thread_count=-1,
+
+    task_type="CPU",
+
+    early_stopping_rounds=200
+
+)
 
 
-def youden_best(y_true, proba):
-    fpr, tpr, thr = roc_curve(y_true, proba)
+# ------------------------------------------------------------
+# G-Mean
+# ------------------------------------------------------------
+
+def gmean_score(y_true, probability):
+
+    fpr, tpr, thr = roc_curve(y_true, probability)
+
     J = tpr - fpr
-    ix = np.argmax(J)
 
-    best_thr = thr[ix]
-    sens = tpr[ix]
-    spec = 1.0 - fpr[ix]
-    gmean = float(np.sqrt(max(sens, 0.0) * max(spec, 0.0)))
+    idx = np.argmax(J)
 
-    return float(best_thr), float(J[ix]), float(sens), float(spec), gmean
+    sensitivity = tpr[idx]
 
+    specificity = 1 - fpr[idx]
 
-def evaluate_stage(y_true, proba):
-
-    auc = roc_auc_score(y_true, proba)
-
-    best_thr, J, sens, spec, gmean = youden_best(y_true, proba)
-
-    y_pred = (proba >= best_thr).astype(int)
-
-    acc = accuracy_score(y_true, y_pred)
-    bal_acc = balanced_accuracy_score(y_true, y_pred)
-    f1w = f1_score(y_true, y_pred, average="weighted", zero_division=0)
-    _ = fbeta_score(y_true, y_pred, beta=0.5, average="weighted", zero_division=0)
-
-    return dict(
-        auc=auc,
-        f1w=f1w,
-        acc=acc,
-        bal_acc=bal_acc,
-        gmean=gmean,
-        youdenJ=J,
-        best_thr=best_thr,
-        sens=sens,
-        spec=spec
-    )
+    return np.sqrt(sensitivity * specificity)
 
 
-def apply_ifoss(X, y, max_samples, contamination, max_features, n_neighbors, n_seeds_S):
+# ------------------------------------------------------------
+# IFOSS
+# ------------------------------------------------------------
 
-    def outlier_rejection(X_, y_):
-        model = IsolationForest(
+def apply_ifoss(
+
+        X,
+
+        y,
+
+        max_samples,
+
+        contamination,
+
+        max_features,
+
+        n_neighbors,
+
+        n_seeds_S
+
+):
+
+    def remove_outliers(X_, y_):
+
+        isolation = IsolationForest(
+
             max_samples=max_samples,
+
             contamination=contamination,
+
             max_features=max_features,
-            random_state=SEED,
-            bootstrap=True
+
+            bootstrap=True,
+
+            random_state=SEED
+
         )
-        model.fit(X_)
-        mask = model.predict(X_) == 1
+
+        isolation.fit(X_)
+
+        mask = isolation.predict(X_) == 1
+
         return X_[mask], y_[mask]
 
-    sampler = FunctionSampler(func=outlier_rejection)
-    X1, y1 = sampler.fit_resample(X, y)
+    sampler = FunctionSampler(
 
-    oss = OneSidedSelection(
-        sampling_strategy="majority",
-        n_neighbors=n_neighbors,
-        n_seeds_S=n_seeds_S,
-        n_jobs=-1,
-        random_state=SEED
+        func=remove_outliers
+
     )
 
-    X_res, y_res = oss.fit_resample(X1, y1)
+    X_clean, y_clean = sampler.fit_resample(
 
-    if isinstance(X_res, np.ndarray):
-        X_res = pd.DataFrame(X_res, columns=X.columns)
+        X,
 
-    return X_res, y_res
+        y
 
+    )
 
-def make_objective(model, name):
+    oss = OneSidedSelection(
 
-    def objective(trial):
+        sampling_strategy="majority",
 
-        pars = {
-            "max_samples": trial.suggest_int("max_samples", 1000, len(X_inner_train)),
-            "contamination": trial.suggest_float("contamination", 0.01, 0.5),
-            "max_features": trial.suggest_float("max_features", 0.3, 1.0),
-            "oss_n_neighbors": trial.suggest_int("oss_n_neighbors", 1, 10),
-            "oss_n_seeds_S": trial.suggest_int("oss_n_seeds_S", 100, 1000)
-        }
+        n_neighbors=n_neighbors,
 
-        X_res, y_res = apply_ifoss(
-            X_inner_train, y_inner_train,
-            max_samples=pars["max_samples"],
-            contamination=pars["contamination"],
-            max_features=pars["max_features"],
-            n_neighbors=pars["oss_n_neighbors"],
-            n_seeds_S=pars["oss_n_seeds_S"]
+        n_seeds_S=n_seeds_S,
+
+        random_state=SEED,
+
+        n_jobs=-1
+
+    )
+
+    X_resampled, y_resampled = oss.fit_resample(
+
+        X_clean,
+
+        y_clean
+
+    )
+
+    if isinstance(X_resampled, np.ndarray):
+
+        X_resampled = pd.DataFrame(
+
+            X_resampled,
+
+            columns=X.columns
+
         )
 
-        if name == "CatBoost":
-            model.fit(
-                X_res, y_res,
-                eval_set=(X_inner_valid, y_inner_valid),
-                cat_features=cat_idx,
-                use_best_model=True
-            )
-        else:
-            model.fit(X_res, y_res)
+    return X_resampled, y_resampled
+# ------------------------------------------------------------
+# OPTUNA OBJECTIVE
+# ------------------------------------------------------------
 
-        proba = model.predict_proba(X_inner_valid)[:, 1]
-        _, _, _, _, gmean = youden_best(y_inner_valid, proba)
+def objective(trial):
 
-        return float(gmean)
+    params = {
 
-    return objective
+        "max_samples": trial.suggest_int(
+            "max_samples",
+            1000,
+            len(X_train)
+        ),
 
+        "contamination": trial.suggest_float(
+            "contamination",
+            0.01,
+            0.50
+        ),
 
-results_no_ifoss, results_ifoss = {}, {}
+        "max_features": trial.suggest_float(
+            "max_features",
+            0.30,
+            1.00
+        ),
 
-for name, model in baseline_models.items():
+        "n_neighbors": trial.suggest_int(
+            "n_neighbors",
+            1,
+            10
+        ),
 
-    if name == "CatBoost":
-        model.fit(Xl, yl_np, eval_set=(Xl_t, yl_t_np),
-                  cat_features=cat_idx, use_best_model=True)
-    else:
-        model.fit(Xl, yl_np)
+        "n_seeds_S": trial.suggest_int(
+            "n_seeds_S",
+            100,
+            1000
+        )
 
-    proba_base = model.predict_proba(Xl_t)[:, 1]
-    res_base = evaluate_stage(yl_t_np, proba_base)
-
-    results_no_ifoss[name] = {
-        k: res_base[k] for k in ["auc", "f1w", "acc", "bal_acc", "gmean"]
     }
 
-    print(f"\n>>> Optuna tuning IFOSS for [{name}] (n_trials={N_TRIALS})")
+    X_res, y_res = apply_ifoss(
 
-    study = optuna.create_study(direction="maximize")
-    study.optimize(make_objective(model, name),
-                   n_trials=N_TRIALS,
-                   show_progress_bar=True)
+        X_train,
+        y_train,
 
-    best_p = study.best_trial.params
+        max_samples=params["max_samples"],
+        contamination=params["contamination"],
+        max_features=params["max_features"],
+        n_neighbors=params["n_neighbors"],
+        n_seeds_S=params["n_seeds_S"]
 
-    X_res, y_res = apply_ifoss(Xl, yl_np, **best_p)
+    )
 
-    if name == "CatBoost":
-        model.fit(X_res, y_res, eval_set=(Xl_t, yl_t_np),
-                  cat_features=cat_idx, use_best_model=True)
-    else:
-        model.fit(X_res, y_res)
+if len(cat_idx) > 0:
 
-    proba_ifoss = model.predict_proba(Xl_t)[:, 1]
-    res_ifoss = evaluate_stage(yl_t_np, proba_ifoss)
+    catboost.fit(
+        X_res,
+        y_res,
+        eval_set=(X_valid, y_valid),
+        cat_features=cat_idx,
+        use_best_model=True
+    )
 
-    results_ifoss[name] = {
-        k: res_ifoss[k] for k in ["auc", "f1w", "acc", "bal_acc", "gmean"]
-    }
+else:
+
+    catboost.fit(
+        X_res,
+        y_res,
+        eval_set=(X_valid, y_valid),
+        use_best_model=True
+    )
+
+    probability = catboost.predict_proba(X_valid)[:, 1]
+
+    return gmean_score(
+        y_valid,
+        probability
+    )
 
 
-metrics_cols = ["auc", "f1w", "acc", "bal_acc", "gmean"]
+# ------------------------------------------------------------
+# RUN OPTUNA
+# ------------------------------------------------------------
 
-df_base = pd.DataFrame(results_no_ifoss).T[metrics_cols]
-df_ifoss = pd.DataFrame(results_ifoss).T[metrics_cols]
-df_improve = (df_ifoss - df_base) * 100
+print("=" * 60)
+print("Optimizing IFOSS...")
+print("=" * 60)
 
-print("\n===== Table 1: Baseline Results (No IFOSS) =====")
-print(df_base.round(6).to_markdown())
+study = optuna.create_study(
+    direction="maximize"
+)
 
-print("\n===== Table 2: With IFOSS (Optuna tuned) =====")
-print(df_ifoss.round(6).to_markdown())
+study.optimize(
+    objective,
+    n_trials=N_TRIALS,
+    show_progress_bar=True
+)
 
-print("\n===== Table 3: Absolute % Point Change (With IFOSS − No IFOSS) =====")
-print(df_improve.round(2).to_markdown())
+best_params = study.best_trial.params
+
+print("\nBest IFOSS Parameters\n")
+print(best_params)
+
+
+# ------------------------------------------------------------
+# APPLY BEST IFOSS TO FULL DATASET
+# ------------------------------------------------------------
+
+X_resampled, y_resampled = apply_ifoss(
+
+    X,
+    y,
+
+    max_samples=best_params["max_samples"],
+    contamination=best_params["contamination"],
+    max_features=best_params["max_features"],
+    n_neighbors=best_params["n_neighbors"],
+    n_seeds_S=best_params["n_seeds_S"]
+
+)
+
+
+# ------------------------------------------------------------
+# SAVE DATASETS
+# ------------------------------------------------------------
+
+X_resampled.to_csv(
+    "X_IFOSS.csv",
+    index=False
+)
+
+pd.Series(y_resampled).to_csv(
+    "y_IFOSS.csv",
+    index=False
+)
+
+
+# ------------------------------------------------------------
+# SUMMARY
+# ------------------------------------------------------------
+
+print("\nOptimization Complete")
+print("-" * 60)
+
+print(f"Original samples : {len(X)}")
+print(f"Resampled samples: {len(X_resampled)}")
+
+print("\nSaved files")
+print("  X_IFOSS.csv")
+print("  y_IFOSS.csv")
+print("\nResampled Feature Matrix (first 5 rows)")
+print(X_resampled.head())
+
+print("\nResampled Labels (first 5 rows)")
+print(pd.Series(y_resampled).head())
