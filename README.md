@@ -138,16 +138,6 @@ Each scenario compares baseline CatBoost performance against IFOSS-preprocessed 
 
 ---
 
-## Installation
-
-Clone the repository
-
-```bash
-git clone https://github.com/<username>/<repository>.git
-
-cd <repository>
-```
-
 Install the required dependencies
 
 ```bash
@@ -193,7 +183,6 @@ The implementation was tested using:
 * Python 3.11
 * NumPy
 * pandas
-* SciPy
 * scikit-learn 1.5.2
 * imbalanced-learn
 * CatBoost
@@ -202,7 +191,6 @@ The implementation was tested using:
 * Optuna
 * UMAP
 * Matplotlib
-* tabulate
 
 See `requirements.txt` for the complete list of dependencies.
 
