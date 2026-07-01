@@ -9,4 +9,4 @@ lightgbm
 catboost
 matplotlib
 umap-learn
-tabulate
+
