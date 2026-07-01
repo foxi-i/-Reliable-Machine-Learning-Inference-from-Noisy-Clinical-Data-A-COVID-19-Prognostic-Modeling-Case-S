@@ -1,5 +1,4 @@
-# Reliable Machine Learning Inference from Noisy Clinical Data:
-A COVID-19 Prognostic Modeling Case Study
+# Reliable Machine Learning Inference from Noisy Clinical Data:A COVID-19 Prognostic Modeling Case Study
 
 
 A modular preprocessing framework for improving the robustness of machine learning models trained on clinical electronic health record (EHR) data.
